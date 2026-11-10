@@ -210,6 +210,15 @@ class VM(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { news.value = withContext(Dispatchers.IO) { Api.news(q) }; newsLoading.value = false }
     }
 
+    val stockNews = mutableStateOf<List<NewsItem>>(emptyList())
+    val stockNewsDone = mutableStateOf(false)
+
+    fun loadStockNews(sym: String) {
+        stockNews.value = emptyList(); stockNewsDone.value = false
+        val q = if (sym.startsWith("^")) "Sensex Nifty Indian stock market" else short(sym) + " share price news India"
+        viewModelScope.launch { stockNews.value = withContext(Dispatchers.IO) { Api.news(q) }; stockNewsDone.value = true }
+    }
+
     val chart = mutableStateOf<List<Candle>>(emptyList())
     val stats = mutableStateOf<Stats?>(null)
     val sig = mutableStateOf<Signal?>(null)
