@@ -14,10 +14,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
-data class Quote(val symbol: String, val name: String, val price: Double, val change: Double, val pct: Double)
-data class Holding(val symbol: String, val qty: Double, val avg: Double)
+data class Quote(val symbol: String, val name: String, val price: Double, val change: Double, val pct: Double, val time: Long = 0L)
+data class Holding(val symbol: String, val qty: Double, val avg: Double, val date: Long = 0L)
 data class Fund(val code: String, val name: String)
-data class FundHolding(val code: String, val name: String, val units: Double, val avg: Double)
+data class FundHolding(val code: String, val name: String, val units: Double, val avg: Double, val date: Long = 0L)
 data class Nav(val nav: Double, val date: String)
 data class NewsItem(val title: String, val source: String, val date: String, val link: String)
 
@@ -42,7 +42,7 @@ object Api {
         val m = JSONObject(get("https://query1.finance.yahoo.com/v8/finance/chart/${enc(sym)}?range=1d&interval=1d"))
             .getJSONObject("chart").getJSONArray("result").getJSONObject(0).getJSONObject("meta")
         val p = m.getDouble("regularMarketPrice"); val prev = m.getDouble("chartPreviousClose")
-        Quote(sym, m.optString("shortName", m.optString("longName", sym)), p, p - prev, (p - prev) / prev * 100)
+        Quote(sym, m.optString("shortName", m.optString("longName", sym)), p, p - prev, (p - prev) / prev * 100, m.optLong("regularMarketTime"))
     } catch (e: Exception) { null }
 
     fun search(q: String): List<Pair<String, String>> = try {
@@ -151,7 +151,7 @@ object Api {
 
 class VM(app: Application) : AndroidViewModel(app) {
     private val sp = app.getSharedPreferences("stocks", 0)
-    val indices = listOf("^NSEI", "^BSESN", "^NSEBANK")
+    val indices = listOf("^NSEI", "^BSESN", "^NSEBANK", "^CNXIT", "^CNXAUTO", "^CNXPHARMA", "^CNXFMCG", "^CNXMETAL")
     val top = listOf("RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS", "ITC.NS", "LT.NS", "BHARTIARTL.NS", "TATAMOTORS.NS")
     val quotes = mutableStateMapOf<String, Quote>()
     val navs = mutableStateMapOf<String, Nav>()
@@ -162,7 +162,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
     val holds = mutableStateListOf<Holding>().apply {
         val a = JSONArray(sp.getString("h", "[]"))
-        for (i in 0 until a.length()) a.getJSONObject(i).let { add(Holding(it.getString("s"), it.getDouble("q"), it.getDouble("a"))) }
+        for (i in 0 until a.length()) a.getJSONObject(i).let { add(Holding(it.getString("s"), it.getDouble("q"), it.getDouble("a"), it.optLong("d", 0L))) }
     }
     val funds = mutableStateListOf<Fund>().apply {
         val a = JSONArray(sp.getString("f", "[]"))
@@ -170,13 +170,13 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
     val fundHolds = mutableStateListOf<FundHolding>().apply {
         val a = JSONArray(sp.getString("fh", "[]"))
-        for (i in 0 until a.length()) a.getJSONObject(i).let { add(FundHolding(it.getString("c"), it.getString("n"), it.getDouble("u"), it.getDouble("a"))) }
+        for (i in 0 until a.length()) a.getJSONObject(i).let { add(FundHolding(it.getString("c"), it.getString("n"), it.getDouble("u"), it.getDouble("a"), it.optLong("d", 0L))) }
     }
 
     private fun save() {
-        val h = JSONArray(); holds.forEach { h.put(JSONObject().put("s", it.symbol).put("q", it.qty).put("a", it.avg)) }
+        val h = JSONArray(); holds.forEach { h.put(JSONObject().put("s", it.symbol).put("q", it.qty).put("a", it.avg).put("d", it.date)) }
         val f = JSONArray(); funds.forEach { f.put(JSONObject().put("c", it.code).put("n", it.name)) }
-        val fh = JSONArray(); fundHolds.forEach { fh.put(JSONObject().put("c", it.code).put("n", it.name).put("u", it.units).put("a", it.avg)) }
+        val fh = JSONArray(); fundHolds.forEach { fh.put(JSONObject().put("c", it.code).put("n", it.name).put("u", it.units).put("a", it.avg).put("d", it.date)) }
         sp.edit().putString("w", watch.joinToString(",")).putString("h", h.toString())
             .putString("f", f.toString()).putString("fh", fh.toString()).apply()
     }
@@ -219,6 +219,18 @@ class VM(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { stockNews.value = withContext(Dispatchers.IO) { Api.news(q) }; stockNewsDone.value = true }
     }
 
+    val ideas = mutableStateMapOf<String, Signal>()
+    val ideasLoading = mutableStateOf(false)
+
+    fun loadIdeas() {
+        ideasLoading.value = ideas.isEmpty()
+        viewModelScope.launch {
+            (top + watch).distinct().map { s -> async(Dispatchers.IO) { s to Api.history(s, "1y", "1d")?.closes?.let { signal(it) } } }
+                .awaitAll().forEach { (s, g) -> if (g != null) ideas[s] = g }
+            ideasLoading.value = false
+        }
+    }
+
     val chart = mutableStateOf<List<Candle>>(emptyList())
     val stats = mutableStateOf<Stats?>(null)
     val sig = mutableStateOf<Signal?>(null)
@@ -251,11 +263,11 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     fun addWatch(s: String) { if (s !in watch) { watch.add(s); save(); refresh() } }
     fun removeWatch(s: String) { watch.remove(s); save() }
-    fun addHolding(s: String, q: Double, a: Double) { holds.add(Holding(s.uppercase(), q, a)); save(); refresh() }
+    fun addHolding(s: String, q: Double, a: Double, d: Long = 0L) { holds.add(Holding(s.uppercase(), q, a, d)); save(); refresh() }
     fun removeHolding(h: Holding) { holds.remove(h); save() }
     fun addFund(c: String, n: String) { if (funds.none { it.code == c }) { funds.add(Fund(c, n)); save(); refresh() } }
     fun removeFund(f: Fund) { funds.remove(f); save() }
-    fun addFundHolding(c: String, n: String, u: Double, a: Double) { fundHolds.add(FundHolding(c, n, u, a)); save(); refresh() }
+    fun addFundHolding(c: String, n: String, u: Double, a: Double, d: Long = 0L) { fundHolds.add(FundHolding(c, n, u, a, d)); save(); refresh() }
     fun removeFundHolding(h: FundHolding) { fundHolds.remove(h); save() }
 }
 

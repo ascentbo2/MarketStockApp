@@ -170,19 +170,7 @@ fun Detail(vm: VM, sym: String, onBack: () -> Unit) {
         }
         Button({ form = true }, Modifier.fillMaxWidth().padding(16.dp)) { Text("Add to portfolio") }
     }
-    if (form) {
-        var a by remember { mutableStateOf("") }; var b by remember { mutableStateOf(q?.price?.let { "%.2f".format(it) } ?: "") }
-        AlertDialog(onDismissRequest = { form = false },
-            confirmButton = { TextButton({
-                val x = a.toDoubleOrNull(); val y = b.toDoubleOrNull()
-                if (x != null && y != null && x > 0) { vm.addHolding(sym, x, y); form = false }
-            }) { Text("Add") } },
-            dismissButton = { TextButton({ form = false }) { Text("Cancel") } },
-            title = { Text(short(sym)) }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(a, { a = it }, singleLine = true, label = { Text("Quantity") })
-                OutlinedTextField(b, { b = it }, singleLine = true, label = { Text("Avg buy price") })
-            } })
-    }
+    if (form) HoldingForm(short(sym), false, q?.price, { qty, rate, d -> vm.addHolding(sym, qty, rate, d); form = false }, { form = false })
 }
 
 fun vcol(v: String) = when (v) { "Bullish", "Strong" -> Green; "Bearish", "Weak" -> Red; else -> Color.Gray }
