@@ -18,6 +18,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.platform.LocalLifecycleOwner
 
 val Green = Color(0xFF2ECC71); val Red = Color(0xFFFF5252); val Orange = Color(0xFFFF7A00)
 fun f(d: Double) = "%,.2f".format(d)
@@ -39,13 +41,20 @@ class MainActivity : ComponentActivity() {
 fun App(vm: VM) {
     var tab by remember { mutableIntStateOf(0) }
     var sel by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { while (true) { vm.refresh(); delay(30_000) } }
+    val lc = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (lc.currentState.isAtLeast(Lifecycle.State.RESUMED)) vm.refresh().join()
+            delay(if (vm.source.value == "Yahoo") 15_000 else 5_000)
+        }
+    }
+    vm.article.value?.let { ArticleScreen(it) { vm.article.value = null }; return }
     sel?.let { Detail(vm, it) { sel = null }; return }
     val titles = listOf("Home", "Markets Dashboard", "Ideas", "News", "Portfolio")
     Scaffold(
         topBar = { TopAppBar(title = { Text(titles[tab], fontWeight = FontWeight.Bold) },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black),
-            actions = { IconButton({ vm.refresh() }) { Icon(Icons.Default.Refresh, "Refresh") } }) },
+            actions = { Text(vm.source.value, style = MaterialTheme.typography.bodySmall, color = Color.Gray); IconButton({ vm.refresh() }) { Icon(Icons.Default.Refresh, "Refresh") } }) },
         bottomBar = { NavigationBar(containerColor = Color(0xFF0D0D0D)) {
             listOf("Home" to Icons.Default.Home, "Markets" to Icons.Default.ShowChart, "Ideas" to Icons.Default.Lightbulb,
                 "News" to Icons.Default.Article, "Portfolio" to Icons.Default.AccountBalanceWallet)
@@ -68,7 +77,7 @@ fun QuoteRow(q: Quote?, sym: String, onClick: () -> Unit = {}, trailing: @Compos
             Text(q?.name ?: "Loading…", style = MaterialTheme.typography.bodySmall, maxLines = 1)
         }
         if (q != null) Column(horizontalAlignment = Alignment.End) {
-            Text(f(q.price), fontWeight = FontWeight.SemiBold)
+            Text(f(q.price), fontWeight = FontWeight.SemiBold, color = col(q.change))
             Text("${sign(q.change)} (${sign(q.pct)}%)", color = col(q.change), style = MaterialTheme.typography.bodySmall)
         }
         trailing()

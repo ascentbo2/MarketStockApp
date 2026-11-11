@@ -20,6 +20,7 @@ data class Fund(val code: String, val name: String)
 data class FundHolding(val code: String, val name: String, val units: Double, val avg: Double, val date: Long = 0L)
 data class Nav(val nav: Double, val date: String)
 data class NewsItem(val title: String, val source: String, val date: String, val link: String)
+data class Mover(val symbol: String, val name: String, val price: Double, val change: Double, val pct: Double, val volume: Double, val high: Double, val low: Double, val buyQty: Double = -1.0, val sellQty: Double = -1.0)
 
 data class Stats(val prev: Double?, val dayHigh: Double?, val dayLow: Double?, val h52: Double?, val l52: Double?, val vol: Double?)
 data class Candle(val t: Long, val o: Double, val h: Double, val l: Double, val c: Double, val v: Double)
@@ -99,6 +100,73 @@ object Api {
         }
         out.take(30)
     } catch (e: Exception) { emptyList() }
+
+    private var nseCookie: String? = null
+    private var nseAt = 0L
+    private val NSE_UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+    private val NSE_INDEX = mapOf("NIFTY 50" to "^NSEI", "NIFTY BANK" to "^NSEBANK", "NIFTY IT" to "^CNXIT", "NIFTY AUTO" to "^CNXAUTO",
+        "NIFTY PHARMA" to "^CNXPHARMA", "NIFTY FMCG" to "^CNXFMCG", "NIFTY METAL" to "^CNXMETAL")
+
+    private fun nseGet(path: String): String {
+        if (nseCookie == null || System.currentTimeMillis() - nseAt > 600_000) {
+            val h = URL("https://www.nseindia.com/").openConnection() as HttpURLConnection
+            h.setRequestProperty("User-Agent", NSE_UA); h.setRequestProperty("Accept", "text/html,*/*")
+            h.connectTimeout = 8000; h.readTimeout = 8000
+            h.responseCode
+            nseCookie = h.headerFields["Set-Cookie"]?.joinToString("; ") { it.substringBefore(";") }
+            nseAt = System.currentTimeMillis(); h.disconnect()
+        }
+        val c = URL("https://www.nseindia.com$path").openConnection() as HttpURLConnection
+        c.setRequestProperty("User-Agent", NSE_UA); c.setRequestProperty("Accept", "*/*")
+        c.setRequestProperty("Referer", "https://www.nseindia.com/"); c.setRequestProperty("Cookie", nseCookie ?: "")
+        c.connectTimeout = 8000; c.readTimeout = 8000
+        if (c.responseCode != 200) { nseCookie = null; throw java.io.IOException("NSE " + c.responseCode) }
+        return c.inputStream.bufferedReader().use { it.readText() }
+    }
+
+    // Unofficial: reads the same public JSON the nseindia.com website uses. Keys are Yahoo-style symbols (TCS.NS, ^NSEI).
+    fun nseQuotes(): Map<String, Quote> {
+        val out = HashMap<String, Quote>(); val now = System.currentTimeMillis() / 1000
+        try {
+            val st = JSONObject(nseGet("/api/equity-stockIndices?index=NIFTY%20500")).getJSONArray("data")
+            for (i in 0 until st.length()) {
+                val o = st.getJSONObject(i)
+                if (o.optInt("priority", 0) == 1 || !o.has("lastPrice")) continue
+                val s = o.optString("symbol") + ".NS"
+                val nm = o.optJSONObject("meta")?.optString("companyName")?.takeIf { it.isNotBlank() } ?: o.optString("symbol")
+                out[s] = Quote(s, nm, o.getDouble("lastPrice"), o.optDouble("change", 0.0), o.optDouble("pChange", 0.0), now)
+            }
+        } catch (e: Exception) { }
+        try {
+            val ix = JSONObject(nseGet("/api/allIndices")).getJSONArray("data")
+            for (i in 0 until ix.length()) {
+                val o = ix.getJSONObject(i); val name = o.optString("index")
+                val y = NSE_INDEX[name] ?: continue
+                out[y] = Quote(y, name, o.getDouble("last"), o.optDouble("variation", 0.0), o.optDouble("percentChange", 0.0), now)
+            }
+        } catch (e: Exception) { }
+        return out
+    }
+
+    private fun encq(s: String) = enc(s).replace("+", "%20")
+
+    // All stocks of one NSE index in a single call (unofficial nseindia.com JSON).
+    fun nseIndexStocks(index: String): List<Mover> = try {
+        val a = JSONObject(nseGet("/api/equity-stockIndices?index=${encq(index)}")).getJSONArray("data")
+        (0 until a.length()).map { a.getJSONObject(it) }
+            .filter { it.optInt("priority", 0) != 1 && it.has("lastPrice") }
+            .map { o ->
+                Mover(o.optString("symbol"), o.optJSONObject("meta")?.optString("companyName")?.takeIf { it.isNotBlank() } ?: o.optString("symbol"),
+                    o.getDouble("lastPrice"), o.optDouble("change", 0.0), o.optDouble("pChange", 0.0), o.optDouble("totalTradedVolume", 0.0),
+                    o.optDouble("dayHigh", 0.0), o.optDouble("dayLow", 0.0))
+            }
+    } catch (e: Exception) { emptyList() }
+
+    // Total pending buy and sell quantity (order book) for one stock.
+    fun nseOrderBook(symbol: String): Pair<Double, Double>? = try {
+        val b = JSONObject(nseGet("/api/quote-equity?symbol=${encq(symbol)}&section=trade_info")).getJSONObject("marketDeptOrderBook")
+        b.getDouble("totalBuyQuantity") to b.getDouble("totalSellQuantity")
+    } catch (e: Exception) { null }
 
     private fun auth() {
         if (crumb != null) return
@@ -181,10 +249,16 @@ class VM(app: Application) : AndroidViewModel(app) {
             .putString("f", f.toString()).putString("fh", fh.toString()).apply()
     }
 
+    val source = mutableStateOf("Yahoo")
+
     fun refresh() = viewModelScope.launch {
         val syms = (indices + top + watch + holds.map { it.symbol }).distinct()
         val codes = (funds.map { it.code } + fundHolds.map { it.code }).distinct()
-        val q = syms.map { async(Dispatchers.IO) { Api.quote(it) } }
+        val nse = withContext(Dispatchers.IO) { Api.nseQuotes() }
+        syms.forEach { s -> nse[s]?.let { quotes[s] = it } }
+        val rest = syms.filter { it !in nse }
+        source.value = if (rest.size == syms.size) "Yahoo" else if (rest.isEmpty()) "NSE" else "NSE + Yahoo"
+        val q = rest.map { async(Dispatchers.IO) { Api.quote(it) } }
         val n = codes.map { c -> async(Dispatchers.IO) { c to Api.nav(c) } }
         q.awaitAll().filterNotNull().forEach { quotes[it.symbol] = it }
         n.awaitAll().forEach { (c, v) -> if (v != null) navs[c] = v }
@@ -200,6 +274,7 @@ class VM(app: Application) : AndroidViewModel(app) {
         fundResults.clear(); fundResults.addAll(r) } }
 
     val news = mutableStateOf<List<NewsItem>>(emptyList())
+    val article = mutableStateOf<NewsItem?>(null)
     val newsMode = mutableStateOf(0)
     val newsLoading = mutableStateOf(false)
 
@@ -228,6 +303,30 @@ class VM(app: Application) : AndroidViewModel(app) {
             (top + watch).distinct().map { s -> async(Dispatchers.IO) { s to Api.history(s, "1y", "1d")?.closes?.let { signal(it) } } }
                 .awaitAll().forEach { (s, g) -> if (g != null) ideas[s] = g }
             ideasLoading.value = false
+        }
+    }
+
+    val movers = mutableStateOf<List<Mover>>(emptyList())
+    val moversIndex = mutableStateOf("NIFTY 50")
+    val moversLoading = mutableStateOf(false)
+    val moversError = mutableStateOf(false)
+
+    fun loadMovers(index: String, book: Boolean = false): Job {
+        moversLoading.value = movers.value.isEmpty(); moversError.value = false
+        return viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) { Api.nseIndexStocks(index) }
+            if (moversIndex.value != index) return@launch
+            moversLoading.value = false
+            if (list.isEmpty()) { moversError.value = movers.value.isEmpty(); return@launch }
+            val prev = movers.value.associateBy { it.symbol }
+            movers.value = if (book) list.map { m -> prev[m.symbol]?.let { m.copy(buyQty = it.buyQty, sellQty = it.sellQty) } ?: m } else list
+            if (!book) return@launch
+            // Buyers only / sellers only: check the order book of stocks sitting at a day high/low after a 2%+ move.
+            val up = list.filter { it.pct >= 1.9 && it.high > 0 && it.price >= it.high - 1e-6 }.sortedByDescending { it.pct }.take(8)
+            val down = list.filter { it.pct <= -1.9 && it.low > 0 && it.price <= it.low + 1e-6 }.sortedBy { it.pct }.take(8)
+            val ob = (up + down).map { m -> async(Dispatchers.IO) { m.symbol to Api.nseOrderBook(m.symbol) } }.awaitAll().toMap()
+            if (moversIndex.value != index) return@launch
+            movers.value = movers.value.map { m -> ob[m.symbol]?.let { m.copy(buyQty = it.first, sellQty = it.second) } ?: m.copy(buyQty = -1.0, sellQty = -1.0) }
         }
     }
 

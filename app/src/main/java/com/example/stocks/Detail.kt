@@ -82,7 +82,7 @@ fun Detail(vm: VM, sym: String, onBack: () -> Unit) {
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text(q?.name ?: sym, style = MaterialTheme.typography.bodySmall)
             if (q != null) {
-                Text("₹" + f(q.price), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("₹" + f(q.price), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = col(q.change))
                 Text("${sign(q.change)} (${sign(q.pct)}%)", color = col(q.change))
             }
         }
@@ -162,7 +162,7 @@ fun Detail(vm: VM, sym: String, onBack: () -> Unit) {
         if (!vm.stockNewsDone.value) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else if (vm.stockNews.value.isEmpty()) Text("No recent news found for this stock.", Modifier.padding(16.dp), color = Color.Gray)
         vm.stockNews.value.take(8).forEach { n ->
-            Column(Modifier.fillMaxWidth().clickable { if (n.link.isNotBlank()) uri.openUri(n.link) }.padding(16.dp, 10.dp)) {
+            Column(Modifier.fillMaxWidth().clickable { if (n.link.isNotBlank()) vm.article.value = n }.padding(16.dp, 10.dp)) {
                 Text(n.title, maxLines = 3, fontWeight = FontWeight.Medium)
                 Text(listOf(n.source, ago(n.date)).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }

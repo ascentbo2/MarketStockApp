@@ -3,6 +3,9 @@ package com.example.stocks
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -45,7 +48,7 @@ fun MarketsDash(vm: VM, open: (String) -> Unit) {
         Box(Modifier.weight(1f).fillMaxHeight()) {
             when (side) {
                 0 -> IndicesPane(vm, open)
-                1 -> StocksPane(vm, vm.top, true, open)
+                1 -> IndianStocksPane(vm, open)
                 2 -> StocksPane(vm, trending, false, open)
                 3 -> Funds(vm)
                 else -> Watchlist(vm, open)
@@ -67,7 +70,7 @@ fun IndexRow(q: Quote?, name: String, onClick: () -> Unit) {
             if (q != null && q.time > 0) Text(SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(q.time * 1000)), fontSize = 10.sp, color = Color.Gray)
         }
         if (q != null) {
-            Text(f(q.price), Modifier.width(78.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text(f(q.price), Modifier.width(78.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp, color = c)
             Column(Modifier.width(66.dp), horizontalAlignment = Alignment.End) {
                 Text(sign(q.change), color = c, fontSize = 11.sp); Text("${sign(q.pct)}%", color = c, fontSize = 11.sp)
             }
@@ -148,7 +151,7 @@ fun Ideas(vm: VM, open: (String) -> Unit) {
                     Text(q?.name ?: "", fontSize = 11.sp, color = Color.Gray, maxLines = 1)
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    if (q != null) Text("₹" + f(q.price))
+                    if (q != null) Text("₹" + f(q.price), color = col(q.change))
                     Text(g.verdict, color = vcol(g.verdict), fontWeight = FontWeight.Bold)
                     Text("${g.positive} of ${g.reasons.size} indicators positive", fontSize = 10.sp, color = Color.Gray)
                 }
@@ -177,11 +180,84 @@ fun NewsScreen(vm: VM) {
             }
         }
         items(vm.news.value) { n ->
-            Column(Modifier.fillMaxWidth().clickable { if (n.link.isNotBlank()) uri.openUri(n.link) }.padding(16.dp, 10.dp)) {
+            Column(Modifier.fillMaxWidth().clickable { if (n.link.isNotBlank()) vm.article.value = n }.padding(16.dp, 10.dp)) {
                 Text(n.title, maxLines = 3, fontWeight = FontWeight.Medium)
                 Text(listOf(n.source, ago(n.date)).filter { it.isNotBlank() }.joinToString(" · "), fontSize = 11.sp, color = Color.Gray)
             }
             HorizontalDivider(color = Line)
         }
     }
+}
+
+fun vol(v: Double) = when { v >= 1e7 -> "%.2f Cr".format(v / 1e7); v >= 1e5 -> "%.2f L".format(v / 1e5); else -> "%,.0f".format(v) }
+
+@Composable
+fun MoverRow(m: Mover, cat: Int, onClick: () -> Unit) {
+    val c = col(m.change)
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(10.dp, 9.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(m.symbol, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+            Text(m.name, fontSize = 10.sp, color = Color.Gray, maxLines = 1)
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(f(m.price), fontWeight = FontWeight.Bold, fontSize = 12.sp, color = c)
+            Text("${sign(m.change)} (${sign(m.pct)}%)", color = c, fontSize = 11.sp)
+            if (cat == 2) Text("Vol " + vol(m.volume), fontSize = 10.sp, color = Color.Gray)
+            if (cat == 3) Text("Buy qty " + vol(m.buyQty), fontSize = 10.sp, color = Green)
+            if (cat == 4) Text("Sell qty " + vol(m.sellQty), fontSize = 10.sp, color = Red)
+        }
+    }
+    HorizontalDivider(color = Line)
+}
+
+@Composable
+fun IndianStocksPane(vm: VM, open: (String) -> Unit) {
+    var cat by remember { mutableIntStateOf(0) }
+    var show by remember { mutableStateOf(false) }
+    val indexList = listOf("NIFTY 50", "NIFTY NEXT 50", "NIFTY 100", "NIFTY 200", "NIFTY 500", "NIFTY BANK", "NIFTY MIDCAP 100", "NIFTY SMALLCAP 100")
+    val cats = listOf("Top Gainers", "Top Losers", "Top Volume", "Buyers Only", "Sellers Only")
+    LaunchedEffect(vm.moversIndex.value, cat >= 3) { while (true) { vm.loadMovers(vm.moversIndex.value, cat >= 3).join(); delay(5_000) } }
+    val all = vm.movers.value
+    val rows = when (cat) {
+        0 -> all.filter { it.pct > 0 }.sortedByDescending { it.pct }.take(15)
+        1 -> all.filter { it.pct < 0 }.sortedBy { it.pct }.take(15)
+        2 -> all.sortedByDescending { it.volume }.take(15)
+        3 -> all.filter { it.buyQty > 0 && it.sellQty == 0.0 }.sortedByDescending { it.pct }
+        else -> all.filter { it.sellQty > 0 && it.buyQty == 0.0 }.sortedBy { it.pct }
+    }
+    LazyColumn {
+        item {
+            Text("Select index", Modifier.padding(10.dp, 8.dp, 10.dp, 2.dp), fontSize = 10.sp, color = Color.Gray)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                indexList.forEach { n ->
+                    FilterChip(vm.moversIndex.value == n, { if (vm.moversIndex.value != n) { vm.movers.value = emptyList(); vm.moversIndex.value = n } },
+                        { Text(n.removePrefix("NIFTY ").let { if (it == "50") "Nifty 50" else it }, fontSize = 11.sp) })
+                }
+            }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp, 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                cats.forEachIndexed { i, t -> FilterChip(cat == i, { cat = i }, { Text(t, fontSize = 11.sp) }) }
+            }
+            TextButton({ show = true }) { Text("Search any NSE / BSE stock", fontSize = 12.sp) }
+        }
+        if (vm.moversLoading.value) item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
+        else if (vm.moversError.value) item {
+            Column(Modifier.padding(16.dp)) {
+                Text("Couldn't load NSE data for ${vm.moversIndex.value}. The NSE website may be blocking the request.", color = Color.Gray, fontSize = 12.sp)
+                TextButton({ vm.loadMovers(vm.moversIndex.value) }) { Text("Retry") }
+            }
+        } else if (rows.isEmpty()) item {
+            Text(when (cat) {
+                3 -> "No stock has only buyers right now in ${vm.moversIndex.value}. This also shows when the market is closed."
+                4 -> "No stock has only sellers right now in ${vm.moversIndex.value}. This also shows when the market is closed."
+                else -> "No stocks to show."
+            }, Modifier.padding(16.dp), color = Color.Gray, fontSize = 12.sp)
+        }
+        items(rows) { m -> MoverRow(m, cat) { open(m.symbol + ".NS") } }
+        if (cat >= 3) item {
+            Text("Checked among stocks up or down 2% or more and sitting at the day's high or low. Buyers only means no pending sell orders; sellers only means no pending buy orders.",
+                Modifier.padding(12.dp), fontSize = 10.sp, color = Color.Gray)
+        }
+    }
+    if (show) SearchDialog("Search stock", "e.g. Tata, Infosys", vm.results.toList(), { vm.search(it) },
+        { show = false; vm.results.clear(); open(it.first) }, { show = false; vm.results.clear() })
 }

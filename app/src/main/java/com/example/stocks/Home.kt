@@ -37,7 +37,7 @@ fun Home(vm: VM, open: (String) -> Unit) {
                     val q = vm.quotes[s]
                     Card(Modifier.weight(1f)) { Column(Modifier.padding(10.dp)) {
                         Text(n, style = MaterialTheme.typography.bodySmall, color = Color.Gray, maxLines = 1)
-                        Text(q?.let { f(it.price) } ?: "…", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(q?.let { f(it.price) } ?: "…", fontWeight = FontWeight.SemiBold, maxLines = 1, color = q?.let { col(it.change) } ?: Color.Unspecified)
                         if (q != null) Text("${sign(q.pct)}%", color = col(q.change), style = MaterialTheme.typography.bodySmall)
                     } }
                 }
@@ -68,7 +68,7 @@ fun Home(vm: VM, open: (String) -> Unit) {
             }
         }
         items(vm.news.value) { n ->
-            Column(Modifier.fillMaxWidth().clickable { if (n.link.isNotBlank()) uri.openUri(n.link) }.padding(16.dp, 10.dp)) {
+            Column(Modifier.fillMaxWidth().clickable { if (n.link.isNotBlank()) vm.article.value = n }.padding(16.dp, 10.dp)) {
                 Text(n.title, maxLines = 3, fontWeight = FontWeight.Medium)
                 Text(listOf(n.source, ago(n.date)).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
