@@ -19,7 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
-val Green = Color(0xFF0B8A4B); val Red = Color(0xFFD32F2F)
+val Green = Color(0xFF2ECC71); val Red = Color(0xFFFF5252); val Orange = Color(0xFFFF7A00)
 fun f(d: Double) = "%,.2f".format(d)
 fun sign(d: Double) = (if (d >= 0) "+" else "") + f(d)
 fun col(d: Double) = if (d >= 0) Green else Red
@@ -29,7 +29,8 @@ class MainActivity : ComponentActivity() {
     private val vm: VM by viewModels()
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
-        setContent { MaterialTheme { App(vm) } }
+        setContent { MaterialTheme(colorScheme = darkColorScheme(primary = Orange, background = Color.Black, surface = Color(0xFF121212),
+            onBackground = Color.White, onSurface = Color.White, surfaceVariant = Color(0xFF1E1E1E), onSurfaceVariant = Color(0xFFB0B0B0))) { App(vm) } }
     }
 }
 
@@ -40,15 +41,23 @@ fun App(vm: VM) {
     var sel by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { while (true) { vm.refresh(); delay(30_000) } }
     sel?.let { Detail(vm, it) { sel = null }; return }
+    val titles = listOf("Home", "Markets Dashboard", "Ideas", "News", "Portfolio")
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Stocks", fontWeight = FontWeight.Bold) },
+        topBar = { TopAppBar(title = { Text(titles[tab], fontWeight = FontWeight.Bold) },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black),
             actions = { IconButton({ vm.refresh() }) { Icon(Icons.Default.Refresh, "Refresh") } }) },
-        bottomBar = { NavigationBar {
-            listOf("Markets" to Icons.Default.ShowChart, "Watchlist" to Icons.Default.Star,
-                "Funds" to Icons.Default.PieChart, "Portfolio" to Icons.Default.AccountBalanceWallet)
-                .forEachIndexed { i, (l, ic) -> NavigationBarItem(tab == i, { tab = i }, { Icon(ic, l) }, label = { Text(l) }) }
+        bottomBar = { NavigationBar(containerColor = Color(0xFF0D0D0D)) {
+            listOf("Home" to Icons.Default.Home, "Markets" to Icons.Default.ShowChart, "Ideas" to Icons.Default.Lightbulb,
+                "News" to Icons.Default.Article, "Portfolio" to Icons.Default.AccountBalanceWallet)
+                .forEachIndexed { i, (l, ic) ->
+                    NavigationBarItem(tab == i, { tab = i }, { Icon(ic, l) }, label = { Text(l) },
+                        colors = NavigationBarItemDefaults.colors(selectedIconColor = Orange, selectedTextColor = Orange,
+                            indicatorColor = Color.Transparent, unselectedIconColor = Color.Gray, unselectedTextColor = Color.Gray))
+                }
         } }
-    ) { pad -> Box(Modifier.padding(pad)) { when (tab) { 0 -> Markets(vm) { sel = it }; 1 -> Watchlist(vm) { sel = it }; 2 -> Funds(vm); else -> Portfolio(vm) { sel = it } } } }
+    ) { pad -> Box(Modifier.padding(pad)) { when (tab) {
+        0 -> Home(vm) { sel = it }; 1 -> MarketsDash(vm) { sel = it }; 2 -> Ideas(vm) { sel = it }; 3 -> NewsScreen(vm)
+        else -> Portfolio(vm) { sel = it } } } }
 }
 
 @Composable
@@ -136,10 +145,13 @@ fun Portfolio(vm: VM, open: (String) -> Unit) {
     var step by remember { mutableIntStateOf(0) }
     var isFund by remember { mutableStateOf(false) }
     var pick by remember { mutableStateOf(Pair("", "")) }
-    val invested = vm.holds.sumOf { it.qty * it.avg } + vm.fundHolds.sumOf { it.units * it.avg }
-    val current = vm.holds.sumOf { it.qty * (vm.quotes[it.symbol]?.price ?: it.avg) } +
-        vm.fundHolds.sumOf { it.units * (vm.navs[it.code]?.nav ?: it.avg) }
-    val pnl = current - invested
+    val stockRows = vm.holds.map { h -> PRow(short(h.symbol), h.symbol, qs(h.qty), h.qty, h.avg, h.date, vm.quotes[h.symbol]?.price ?: h.avg) { vm.removeHolding(h) } }
+    val fundRows = vm.fundHolds.map { h -> PRow(h.name, null, qs(h.units) + " units", h.units, h.avg, h.date, vm.navs[h.code]?.nav ?: h.avg) { vm.removeFundHolding(h) } }
+    val all = stockRows + fundRows
+    val invested = all.sumOf { it.qty * it.rate }; val current = all.sumOf { it.qty * it.price }; val pnl = current - invested
+    val lt = all.filter { it.date > 0 && isLong(it.date) }.sumOf { it.qty * (it.price - it.rate) }
+    val st = all.filter { it.date > 0 && !isLong(it.date) }.sumOf { it.qty * (it.price - it.rate) }
+    val nodate = all.count { it.date == 0L }
     fun close() { step = 0; vm.results.clear(); vm.fundResults.clear() }
     Box(Modifier.fillMaxSize()) {
         LazyColumn {
@@ -148,20 +160,20 @@ fun Portfolio(vm: VM, open: (String) -> Unit) {
                     Text("Current value"); Text("₹${f(current)}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     Text("Invested ₹${f(invested)}")
                     Text("P&L ${sign(pnl)} (${if (invested > 0) sign(pnl / invested * 100) else "0.00"}%)", color = col(pnl), fontWeight = FontWeight.SemiBold)
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Long-term gain/loss"); Text(sign(lt), color = col(lt), fontWeight = FontWeight.SemiBold) }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Short-term gain/loss"); Text(sign(st), color = col(st), fontWeight = FontWeight.SemiBold) }
+                    Text("Unrealised, before tax. Long term means held for more than 12 months." +
+                        (if (nodate > 0) " $nodate holding(s) with no purchase date are left out of the long/short split." else ""),
+                        Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 } }
             }
             item { Text("Stocks", Modifier.padding(16.dp, 4.dp), style = MaterialTheme.typography.titleMedium) }
-            if (vm.holds.isEmpty()) item { Text("No stocks yet", Modifier.padding(16.dp, 4.dp)) }
-            items(vm.holds.toList()) { h ->
-                val q = vm.quotes[h.symbol]; val p = ((q?.price ?: h.avg) - h.avg) * h.qty
-                HoldRow(short(h.symbol), "${h.qty} @ ₹${f(h.avg)}", "₹${f(q?.price ?: h.avg)}", p, { open(h.symbol) }) { vm.removeHolding(h) }
-            }
+            if (stockRows.isEmpty()) item { Text("No stocks yet", Modifier.padding(16.dp, 4.dp)) }
+            items(stockRows) { r -> PortRow(r) { open(r.sym!!) } }
             item { Text("Mutual funds", Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp), style = MaterialTheme.typography.titleMedium) }
-            if (vm.fundHolds.isEmpty()) item { Text("No mutual funds yet", Modifier.padding(16.dp, 4.dp)) }
-            items(vm.fundHolds.toList()) { h ->
-                val nav = vm.navs[h.code]?.nav ?: h.avg; val p = (nav - h.avg) * h.units
-                HoldRow(h.name, "${h.units} units @ ₹${f(h.avg)}", "₹${f(nav * h.units)}", p) { vm.removeFundHolding(h) }
-            }
+            if (fundRows.isEmpty()) item { Text("No mutual funds yet", Modifier.padding(16.dp, 4.dp)) }
+            items(fundRows) { r -> PortRow(r) }
             item { Spacer(Modifier.height(80.dp)) }
         }
         FloatingActionButton({ step = 1 }, Modifier.align(Alignment.BottomEnd).padding(16.dp)) { Icon(Icons.Default.Add, "Add") }
@@ -175,22 +187,8 @@ fun Portfolio(vm: VM, open: (String) -> Unit) {
             } })
         2 -> if (isFund) SearchDialog("Search mutual fund", "e.g. Parag Parikh", vm.fundResults.toList(), { vm.searchFunds(it) }, { pick = it; step = 3 }, { close() })
              else SearchDialog("Search stock", "e.g. Tata, Infosys", vm.results.toList(), { vm.search(it) }, { pick = it; step = 3 }, { close() })
-        3 -> {
-            var a by remember { mutableStateOf("") }; var b by remember { mutableStateOf("") }
-            AlertDialog(onDismissRequest = { close() },
-                confirmButton = { TextButton({
-                    val x = a.toDoubleOrNull(); val y = b.toDoubleOrNull()
-                    if (x != null && y != null && x > 0) {
-                        if (isFund) vm.addFundHolding(pick.first, pick.second, x, y) else vm.addHolding(pick.first, x, y)
-                        close()
-                    }
-                }) { Text("Add") } },
-                dismissButton = { TextButton({ close() }) { Text("Cancel") } },
-                title = { Text(pick.second, maxLines = 2) }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(a, { a = it }, singleLine = true, label = { Text(if (isFund) "Units" else "Quantity") })
-                    OutlinedTextField(b, { b = it }, singleLine = true, label = { Text(if (isFund) "Avg NAV (buy price)" else "Avg buy price") })
-                } })
-        }
+        3 -> HoldingForm(pick.second, isFund, if (isFund) vm.navs[pick.first]?.nav else vm.quotes[pick.first]?.price,
+            { q, r, d -> if (isFund) vm.addFundHolding(pick.first, pick.second, q, r, d) else vm.addHolding(pick.first, q, r, d); close() }, { close() })
     }
 }
 

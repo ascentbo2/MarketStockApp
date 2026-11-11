@@ -9,18 +9,21 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
-data class Quote(val symbol: String, val name: String, val price: Double, val change: Double, val pct: Double)
-data class Holding(val symbol: String, val qty: Double, val avg: Double)
+data class Quote(val symbol: String, val name: String, val price: Double, val change: Double, val pct: Double, val time: Long = 0L)
+data class Holding(val symbol: String, val qty: Double, val avg: Double, val date: Long = 0L)
 data class Fund(val code: String, val name: String)
-data class FundHolding(val code: String, val name: String, val units: Double, val avg: Double)
+data class FundHolding(val code: String, val name: String, val units: Double, val avg: Double, val date: Long = 0L)
 data class Nav(val nav: Double, val date: String)
+data class NewsItem(val title: String, val source: String, val date: String, val link: String)
 
 data class Stats(val prev: Double?, val dayHigh: Double?, val dayLow: Double?, val h52: Double?, val l52: Double?, val vol: Double?)
-data class Hist(val closes: List<Double>, val stats: Stats)
+data class Candle(val t: Long, val o: Double, val h: Double, val l: Double, val c: Double, val v: Double)
+data class Hist(val closes: List<Double>, val candles: List<Candle>, val stats: Stats)
 data class Signal(val verdict: String, val positive: Int, val reasons: List<Pair<String, Boolean>>)
 
 object Api {
@@ -39,7 +42,7 @@ object Api {
         val m = JSONObject(get("https://query1.finance.yahoo.com/v8/finance/chart/${enc(sym)}?range=1d&interval=1d"))
             .getJSONObject("chart").getJSONArray("result").getJSONObject(0).getJSONObject("meta")
         val p = m.getDouble("regularMarketPrice"); val prev = m.getDouble("chartPreviousClose")
-        Quote(sym, m.optString("shortName", m.optString("longName", sym)), p, p - prev, (p - prev) / prev * 100)
+        Quote(sym, m.optString("shortName", m.optString("longName", sym)), p, p - prev, (p - prev) / prev * 100, m.optLong("regularMarketTime"))
     } catch (e: Exception) { null }
 
     fun search(q: String): List<Pair<String, String>> = try {
@@ -58,12 +61,44 @@ object Api {
         val r = JSONObject(get("https://query1.finance.yahoo.com/v8/finance/chart/${enc(sym)}?range=$range&interval=$interval"))
             .getJSONObject("chart").getJSONArray("result").getJSONObject(0)
         val m = r.getJSONObject("meta")
-        val c = r.getJSONObject("indicators").getJSONArray("quote").getJSONObject(0).getJSONArray("close")
-        val list = (0 until c.length()).filter { !c.isNull(it) }.map { c.getDouble(it) }
+        val ts = r.getJSONArray("timestamp")
+        val q = r.getJSONObject("indicators").getJSONArray("quote").getJSONObject(0)
+        val cl = q.getJSONArray("close"); val op = q.optJSONArray("open"); val hi = q.optJSONArray("high")
+        val lo = q.optJSONArray("low"); val vo = q.optJSONArray("volume")
+        val candles = (0 until cl.length()).filter { !cl.isNull(it) }.map { i ->
+            val c = cl.getDouble(i)
+            Candle(ts.getLong(i), op?.optDouble(i, c) ?: c, hi?.optDouble(i, c) ?: c, lo?.optDouble(i, c) ?: c, c, vo?.optDouble(i, 0.0) ?: 0.0)
+        }
+        val list = candles.map { it.c }
         fun d(k: String) = if (m.has(k)) m.getDouble(k) else null
-        Hist(list, Stats(d("chartPreviousClose"), d("regularMarketDayHigh"), d("regularMarketDayLow"),
+        Hist(list, candles, Stats(d("chartPreviousClose"), d("regularMarketDayHigh"), d("regularMarketDayLow"),
             d("fiftyTwoWeekHigh"), d("fiftyTwoWeekLow"), d("regularMarketVolume")))
     } catch (e: Exception) { null }
+
+    fun news(q: String): List<NewsItem> = try {
+        val p = android.util.Xml.newPullParser()
+        p.setInput(java.io.StringReader(get("https://news.google.com/rss/search?q=${enc(q)}&hl=en-IN&gl=IN&ceid=IN:en")))
+        val out = mutableListOf<NewsItem>()
+        var t = ""; var l = ""; var d = ""; var s = ""; var inItem = false; var tag = ""
+        var ev = p.eventType
+        while (ev != XmlPullParser.END_DOCUMENT) {
+            when (ev) {
+                XmlPullParser.START_TAG -> { tag = p.name; if (tag == "item") { inItem = true; t = ""; l = ""; d = ""; s = "" } }
+                XmlPullParser.TEXT -> if (inItem) when (tag) { "title" -> t += p.text; "link" -> l += p.text; "pubDate" -> d += p.text; "source" -> s += p.text }
+                XmlPullParser.END_TAG -> {
+                    if (p.name == "item") {
+                        inItem = false
+                        val head = if (" - " in t) t.substringBeforeLast(" - ").trim() else t.trim()
+                        val src = s.ifBlank { if (" - " in t) t.substringAfterLast(" - ").trim() else "" }
+                        out.add(NewsItem(head, src, d.trim(), l.trim()))
+                    }
+                    tag = ""
+                }
+            }
+            ev = p.next()
+        }
+        out.take(30)
+    } catch (e: Exception) { emptyList() }
 
     private fun auth() {
         if (crumb != null) return
@@ -116,7 +151,7 @@ object Api {
 
 class VM(app: Application) : AndroidViewModel(app) {
     private val sp = app.getSharedPreferences("stocks", 0)
-    val indices = listOf("^NSEI", "^BSESN", "^NSEBANK")
+    val indices = listOf("^NSEI", "^BSESN", "^NSEBANK", "^CNXIT", "^CNXAUTO", "^CNXPHARMA", "^CNXFMCG", "^CNXMETAL")
     val top = listOf("RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS", "ITC.NS", "LT.NS", "BHARTIARTL.NS", "TATAMOTORS.NS")
     val quotes = mutableStateMapOf<String, Quote>()
     val navs = mutableStateMapOf<String, Nav>()
@@ -127,7 +162,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
     val holds = mutableStateListOf<Holding>().apply {
         val a = JSONArray(sp.getString("h", "[]"))
-        for (i in 0 until a.length()) a.getJSONObject(i).let { add(Holding(it.getString("s"), it.getDouble("q"), it.getDouble("a"))) }
+        for (i in 0 until a.length()) a.getJSONObject(i).let { add(Holding(it.getString("s"), it.getDouble("q"), it.getDouble("a"), it.optLong("d", 0L))) }
     }
     val funds = mutableStateListOf<Fund>().apply {
         val a = JSONArray(sp.getString("f", "[]"))
@@ -135,13 +170,13 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
     val fundHolds = mutableStateListOf<FundHolding>().apply {
         val a = JSONArray(sp.getString("fh", "[]"))
-        for (i in 0 until a.length()) a.getJSONObject(i).let { add(FundHolding(it.getString("c"), it.getString("n"), it.getDouble("u"), it.getDouble("a"))) }
+        for (i in 0 until a.length()) a.getJSONObject(i).let { add(FundHolding(it.getString("c"), it.getString("n"), it.getDouble("u"), it.getDouble("a"), it.optLong("d", 0L))) }
     }
 
     private fun save() {
-        val h = JSONArray(); holds.forEach { h.put(JSONObject().put("s", it.symbol).put("q", it.qty).put("a", it.avg)) }
+        val h = JSONArray(); holds.forEach { h.put(JSONObject().put("s", it.symbol).put("q", it.qty).put("a", it.avg).put("d", it.date)) }
         val f = JSONArray(); funds.forEach { f.put(JSONObject().put("c", it.code).put("n", it.name)) }
-        val fh = JSONArray(); fundHolds.forEach { fh.put(JSONObject().put("c", it.code).put("n", it.name).put("u", it.units).put("a", it.avg)) }
+        val fh = JSONArray(); fundHolds.forEach { fh.put(JSONObject().put("c", it.code).put("n", it.name).put("u", it.units).put("a", it.avg).put("d", it.date)) }
         sp.edit().putString("w", watch.joinToString(",")).putString("h", h.toString())
             .putString("f", f.toString()).putString("fh", fh.toString()).apply()
     }
@@ -164,7 +199,39 @@ class VM(app: Application) : AndroidViewModel(app) {
         delay(300); val r = if (q.length < 3) emptyList() else withContext(Dispatchers.IO) { Api.fundSearch(q) }
         fundResults.clear(); fundResults.addAll(r) } }
 
-    val chart = mutableStateOf<List<Double>>(emptyList())
+    val news = mutableStateOf<List<NewsItem>>(emptyList())
+    val newsMode = mutableStateOf(0)
+    val newsLoading = mutableStateOf(false)
+
+    fun loadNews(mode: Int) {
+        newsMode.value = mode; newsLoading.value = news.value.isEmpty()
+        val q = if (mode == 1 && watch.isNotEmpty()) watch.take(6).joinToString(" OR ") { short(it) } + " stock India"
+                else "Sensex Nifty Indian stock market"
+        viewModelScope.launch { news.value = withContext(Dispatchers.IO) { Api.news(q) }; newsLoading.value = false }
+    }
+
+    val stockNews = mutableStateOf<List<NewsItem>>(emptyList())
+    val stockNewsDone = mutableStateOf(false)
+
+    fun loadStockNews(sym: String) {
+        stockNews.value = emptyList(); stockNewsDone.value = false
+        val q = if (sym.startsWith("^")) "Sensex Nifty Indian stock market" else short(sym) + " share price news India"
+        viewModelScope.launch { stockNews.value = withContext(Dispatchers.IO) { Api.news(q) }; stockNewsDone.value = true }
+    }
+
+    val ideas = mutableStateMapOf<String, Signal>()
+    val ideasLoading = mutableStateOf(false)
+
+    fun loadIdeas() {
+        ideasLoading.value = ideas.isEmpty()
+        viewModelScope.launch {
+            (top + watch).distinct().map { s -> async(Dispatchers.IO) { s to Api.history(s, "1y", "1d")?.closes?.let { signal(it) } } }
+                .awaitAll().forEach { (s, g) -> if (g != null) ideas[s] = g }
+            ideasLoading.value = false
+        }
+    }
+
+    val chart = mutableStateOf<List<Candle>>(emptyList())
     val stats = mutableStateOf<Stats?>(null)
     val sig = mutableStateOf<Signal?>(null)
     val tech = mutableStateOf<List<Tech>>(emptyList())
@@ -179,7 +246,7 @@ class VM(app: Application) : AndroidViewModel(app) {
             val a = async(Dispatchers.IO) { Api.history(sym, "1d", "5m") }
             val b = async(Dispatchers.IO) { Api.history(sym, "1y", "1d") }
             if (sym !in quotes) withContext(Dispatchers.IO) { Api.quote(sym) }?.let { quotes[sym] = it }
-            val h = a.await(); stats.value = h?.stats; chart.value = h?.closes ?: emptyList()
+            val h = a.await(); stats.value = h?.stats; chart.value = h?.candles ?: emptyList()
             val yc = b.await()?.closes
             sig.value = yc?.let { signal(it) }; tech.value = yc?.let { technicals(it) } ?: emptyList()
         }
@@ -191,16 +258,16 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     fun loadChart(sym: String, range: String) {
         val (r, i) = when (range) { "1D" -> "1d" to "5m"; "1M" -> "1mo" to "1d"; "6M" -> "6mo" to "1d"; "1Y" -> "1y" to "1d"; else -> "5y" to "1wk" }
-        viewModelScope.launch { chart.value = withContext(Dispatchers.IO) { Api.history(sym, r, i) }?.closes ?: emptyList() }
+        viewModelScope.launch { chart.value = withContext(Dispatchers.IO) { Api.history(sym, r, i) }?.candles ?: emptyList() }
     }
 
     fun addWatch(s: String) { if (s !in watch) { watch.add(s); save(); refresh() } }
     fun removeWatch(s: String) { watch.remove(s); save() }
-    fun addHolding(s: String, q: Double, a: Double) { holds.add(Holding(s.uppercase(), q, a)); save(); refresh() }
+    fun addHolding(s: String, q: Double, a: Double, d: Long = 0L) { holds.add(Holding(s.uppercase(), q, a, d)); save(); refresh() }
     fun removeHolding(h: Holding) { holds.remove(h); save() }
     fun addFund(c: String, n: String) { if (funds.none { it.code == c }) { funds.add(Fund(c, n)); save(); refresh() } }
     fun removeFund(f: Fund) { funds.remove(f); save() }
-    fun addFundHolding(c: String, n: String, u: Double, a: Double) { fundHolds.add(FundHolding(c, n, u, a)); save(); refresh() }
+    fun addFundHolding(c: String, n: String, u: Double, a: Double, d: Long = 0L) { fundHolds.add(FundHolding(c, n, u, a, d)); save(); refresh() }
     fun removeFundHolding(h: FundHolding) { fundHolds.remove(h); save() }
 }
 
