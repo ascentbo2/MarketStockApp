@@ -107,7 +107,19 @@ object Api {
     private val NSE_INDEX = mapOf("NIFTY 50" to "^NSEI", "NIFTY BANK" to "^NSEBANK", "NIFTY IT" to "^CNXIT", "NIFTY AUTO" to "^CNXAUTO",
         "NIFTY PHARMA" to "^CNXPHARMA", "NIFTY FMCG" to "^CNXFMCG", "NIFTY METAL" to "^CNXMETAL")
 
+    @Volatile var nseError = ""
+    private var nseBlockedUntil = 0L
+
     private fun nseGet(path: String): String {
+        if (System.currentTimeMillis() < nseBlockedUntil) throw java.io.IOException(nseError.ifBlank { "NSE paused" })
+        try { return nseGetRaw(path) } catch (e: Exception) {
+            nseError = e.message ?: e.javaClass.simpleName
+            nseBlockedUntil = System.currentTimeMillis() + 60_000; nseCookie = null
+            throw e
+        }
+    }
+
+    private fun nseGetRaw(path: String): String {
         if (nseCookie == null || System.currentTimeMillis() - nseAt > 600_000) {
             val h = URL("https://www.nseindia.com/").openConnection() as HttpURLConnection
             h.setRequestProperty("User-Agent", NSE_UA); h.setRequestProperty("Accept", "text/html,*/*")
@@ -160,7 +172,53 @@ object Api {
                     o.getDouble("lastPrice"), o.optDouble("change", 0.0), o.optDouble("pChange", 0.0), o.optDouble("totalTradedVolume", 0.0),
                     o.optDouble("dayHigh", 0.0), o.optDouble("dayLow", 0.0))
             }
-    } catch (e: Exception) { emptyList() }
+    } catch (e: Exception) { if (nseError.isBlank()) nseError = e.javaClass.simpleName; emptyList() }
+
+    // ---- Yahoo fallback for the Indian Stocks pane (used when NSE does not answer) ----
+    private val NIFTY50 = listOf("ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL",
+        "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO", "HINDALCO", "HINDUNILVR",
+        "ICICIBANK", "INDUSINDBK", "INFY", "ITC", "JSWSTEEL", "JIOFIN", "KOTAKBANK", "LT", "M&M", "MARUTI", "NESTLEIND", "NTPC", "ONGC", "POWERGRID",
+        "RELIANCE", "SBILIFE", "SBIN", "SHRIRAMFIN", "SUNPHARMA", "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TCS", "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO")
+    private val NIFTYBANK = listOf("AXISBANK", "BANKBARODA", "CANBK", "FEDERALBNK", "HDFCBANK", "ICICIBANK", "IDFCFIRSTB", "INDUSINDBK", "KOTAKBANK", "PNB", "SBIN", "AUBANK")
+    private val CSV_NAME = mapOf("NIFTY 50" to "ind_nifty50list", "NIFTY NEXT 50" to "ind_niftynext50list", "NIFTY 100" to "ind_nifty100list",
+        "NIFTY 200" to "ind_nifty200list", "NIFTY 500" to "ind_nifty500list", "NIFTY BANK" to "ind_niftybanklist",
+        "NIFTY MIDCAP 100" to "ind_niftymidcap100list", "NIFTY SMALLCAP 100" to "ind_niftysmallcap100list")
+    private val constCache = HashMap<String, List<String>>()
+
+    private fun plain(url: String): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.setRequestProperty("User-Agent", "Mozilla/5.0"); c.connectTimeout = 8000; c.readTimeout = 8000
+        return c.inputStream.bufferedReader().use { it.readText() }
+    }
+
+    private fun constituents(index: String): List<String> {
+        constCache[index]?.let { return it }
+        val fromCsv = try {
+            plain("https://archives.nseindia.com/content/indices/${CSV_NAME[index]}.csv").lines().drop(1).mapNotNull { l ->
+                val p = l.trim().split(","); if (p.size >= 3) p[p.size - 3].trim().takeIf { it.isNotBlank() } else null }
+        } catch (e: Exception) { emptyList() }
+        val res = if (fromCsv.size >= 5) fromCsv else when (index) { "NIFTY 50" -> NIFTY50; "NIFTY BANK" -> NIFTYBANK; else -> emptyList() }
+        if (res.isNotEmpty()) constCache[index] = res
+        return res
+    }
+
+    private fun yahooBatch(syms: List<String>): List<Mover> = try {
+        auth()
+        val r = JSONObject(get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=${enc(syms.joinToString(",") { "$it.NS" })}&crumb=${enc(crumb!!)}"))
+            .getJSONObject("quoteResponse").getJSONArray("result")
+        (0 until r.length()).map { r.getJSONObject(it) }.filter { it.has("regularMarketPrice") }.map { o ->
+            val s = o.getString("symbol").removeSuffix(".NS")
+            Mover(s, o.optString("shortName", s), o.getDouble("regularMarketPrice"), o.optDouble("regularMarketChange", 0.0),
+                o.optDouble("regularMarketChangePercent", 0.0), o.optDouble("regularMarketVolume", 0.0),
+                o.optDouble("regularMarketDayHigh", 0.0), o.optDouble("regularMarketDayLow", 0.0))
+        }
+    } catch (e: Exception) { crumb = null; emptyList() }
+
+    suspend fun yahooMovers(index: String): List<Mover> {
+        val syms = withContext(Dispatchers.IO) { constituents(index) }
+        if (syms.isEmpty()) return emptyList()
+        return coroutineScope { syms.chunked(100).map { c -> async(Dispatchers.IO) { yahooBatch(c) } }.awaitAll().flatten() }
+    }
 
     // Total pending buy and sell quantity (order book) for one stock.
     fun nseOrderBook(symbol: String): Pair<Double, Double>? = try {
@@ -310,17 +368,20 @@ class VM(app: Application) : AndroidViewModel(app) {
     val moversIndex = mutableStateOf("NIFTY 50")
     val moversLoading = mutableStateOf(false)
     val moversError = mutableStateOf(false)
+    val moversSource = mutableStateOf("NSE")
 
     fun loadMovers(index: String, book: Boolean = false): Job {
         moversLoading.value = movers.value.isEmpty(); moversError.value = false
         return viewModelScope.launch {
-            val list = withContext(Dispatchers.IO) { Api.nseIndexStocks(index) }
+            var list = withContext(Dispatchers.IO) { Api.nseIndexStocks(index) }
+            if (list.isNotEmpty()) moversSource.value = "NSE"
+            else { list = Api.yahooMovers(index); if (list.isNotEmpty()) moversSource.value = "Yahoo" }
             if (moversIndex.value != index) return@launch
             moversLoading.value = false
             if (list.isEmpty()) { moversError.value = movers.value.isEmpty(); return@launch }
             val prev = movers.value.associateBy { it.symbol }
             movers.value = if (book) list.map { m -> prev[m.symbol]?.let { m.copy(buyQty = it.buyQty, sellQty = it.sellQty) } ?: m } else list
-            if (!book) return@launch
+            if (!book || moversSource.value != "NSE") return@launch
             // Buyers only / sellers only: check the order book of stocks sitting at a day high/low after a 2%+ move.
             val up = list.filter { it.pct >= 1.9 && it.high > 0 && it.price >= it.high - 1e-6 }.sortedByDescending { it.pct }.take(8)
             val down = list.filter { it.pct <= -1.9 && it.low > 0 && it.price <= it.low + 1e-6 }.sortedBy { it.pct }.take(8)

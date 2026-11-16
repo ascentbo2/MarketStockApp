@@ -238,15 +238,16 @@ fun IndianStocksPane(vm: VM, open: (String) -> Unit) {
                 cats.forEachIndexed { i, t -> FilterChip(cat == i, { cat = i }, { Text(t, fontSize = 11.sp) }) }
             }
             TextButton({ show = true }) { Text("Search any NSE / BSE stock", fontSize = 12.sp) }
+            Text("Source: " + (if (vm.moversSource.value == "NSE") "NSE (live)" else "Yahoo Finance (may be delayed)"), Modifier.padding(horizontal = 12.dp), fontSize = 10.sp, color = Color.Gray)
         }
         if (vm.moversLoading.value) item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
         else if (vm.moversError.value) item {
             Column(Modifier.padding(16.dp)) {
-                Text("Couldn't load NSE data for ${vm.moversIndex.value}. The NSE website may be blocking the request.", color = Color.Gray, fontSize = 12.sp)
+                Text("Couldn't load data for ${vm.moversIndex.value}. NSE said: ${Api.nseError.ifBlank { "no response" }}. The Yahoo fallback returned nothing either.", color = Color.Gray, fontSize = 12.sp)
                 TextButton({ vm.loadMovers(vm.moversIndex.value) }) { Text("Retry") }
             }
         } else if (rows.isEmpty()) item {
-            Text(when (cat) {
+            Text(if (cat >= 3 && vm.moversSource.value != "NSE") "Buyers Only and Sellers Only need live NSE order-book data, which NSE is not sending right now. Gainers, Losers and Volume still work." else when (cat) {
                 3 -> "No stock has only buyers right now in ${vm.moversIndex.value}. This also shows when the market is closed."
                 4 -> "No stock has only sellers right now in ${vm.moversIndex.value}. This also shows when the market is closed."
                 else -> "No stocks to show."
