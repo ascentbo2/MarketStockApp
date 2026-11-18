@@ -191,7 +191,7 @@ object Api {
         return c.inputStream.bufferedReader().use { it.readText() }
     }
 
-    private fun constituents(index: String): List<String> {
+    fun constituents(index: String): List<String> {
         constCache[index]?.let { return it }
         val fromCsv = try {
             plain("https://archives.nseindia.com/content/indices/${CSV_NAME[index]}.csv").lines().drop(1).mapNotNull { l ->
@@ -307,15 +307,44 @@ class VM(app: Application) : AndroidViewModel(app) {
             .putString("f", f.toString()).putString("fh", fh.toString()).apply()
     }
 
+    val angelStatus = mutableStateOf("Not set up")
+    private val app = app
+
+    init {
+        val v = Vault.load(app)
+        Angel.configure(app.filesDir, v[0], v[1], v[2], v[3]); angelStatus.value = Angel.status
+    }
+
+    fun angelCreds(): List<String> = Vault.load(app)
+
+    fun saveAngel(k: String, c: String, p: String, s: String) {
+        Vault.save(app, listOf(k, c, p, s))
+        Angel.configure(app.filesDir, k, c, p, s); angelStatus.value = Angel.status
+        if (Angel.status == "Not set up") return
+        viewModelScope.launch {
+            angelStatus.value = "Connecting…"
+            withContext(Dispatchers.IO) { if (Angel.login()) Angel.loadMaster() }
+            angelStatus.value = Angel.status
+            refresh()
+        }
+    }
+
     val source = mutableStateOf("Yahoo")
 
     fun refresh() = viewModelScope.launch {
         val syms = (indices + top + watch + holds.map { it.symbol }).distinct()
         val codes = (funds.map { it.code } + fundHolds.map { it.code }).distinct()
-        val nse = withContext(Dispatchers.IO) { Api.nseQuotes() }
-        syms.forEach { s -> nse[s]?.let { quotes[s] = it } }
-        val rest = syms.filter { it !in nse }
-        source.value = if (rest.size == syms.size) "Yahoo" else if (rest.isEmpty()) "NSE" else "NSE + Yahoo"
+        val ang = withContext(Dispatchers.IO) { Angel.quotes(syms) }
+        angelStatus.value = Angel.status
+        val nse = if (ang.size >= syms.size) emptyMap() else withContext(Dispatchers.IO) { Api.nseQuotes() }
+        val got = ang + nse.filterKeys { it !in ang }
+        syms.forEach { s -> got[s]?.let { quotes[s] = it } }
+        val rest = syms.filter { it !in got }
+        val tags = mutableListOf<String>()
+        if (ang.isNotEmpty()) tags.add("Angel One")
+        if (nse.keys.any { it !in ang }) tags.add("NSE")
+        if (rest.isNotEmpty() || tags.isEmpty()) tags.add("Yahoo")
+        source.value = tags.joinToString(" + ")
         val q = rest.map { async(Dispatchers.IO) { Api.quote(it) } }
         val n = codes.map { c -> async(Dispatchers.IO) { c to Api.nav(c) } }
         q.awaitAll().filterNotNull().forEach { quotes[it.symbol] = it }
@@ -373,14 +402,18 @@ class VM(app: Application) : AndroidViewModel(app) {
     fun loadMovers(index: String, book: Boolean = false): Job {
         moversLoading.value = movers.value.isEmpty(); moversError.value = false
         return viewModelScope.launch {
-            var list = withContext(Dispatchers.IO) { Api.nseIndexStocks(index) }
-            if (list.isNotEmpty()) moversSource.value = "NSE"
-            else { list = Api.yahooMovers(index); if (list.isNotEmpty()) moversSource.value = "Yahoo" }
+            var list = withContext(Dispatchers.IO) { Angel.movers(index) }
+            if (list.isNotEmpty()) moversSource.value = "Angel One"
+            else {
+                list = withContext(Dispatchers.IO) { Api.nseIndexStocks(index) }
+                if (list.isNotEmpty()) moversSource.value = "NSE"
+                else { list = Api.yahooMovers(index); if (list.isNotEmpty()) moversSource.value = "Yahoo" }
+            }
             if (moversIndex.value != index) return@launch
             moversLoading.value = false
             if (list.isEmpty()) { moversError.value = movers.value.isEmpty(); return@launch }
             val prev = movers.value.associateBy { it.symbol }
-            movers.value = if (book) list.map { m -> prev[m.symbol]?.let { m.copy(buyQty = it.buyQty, sellQty = it.sellQty) } ?: m } else list
+            movers.value = if (book && moversSource.value == "NSE") list.map { m -> prev[m.symbol]?.let { m.copy(buyQty = it.buyQty, sellQty = it.sellQty) } ?: m } else list
             if (!book || moversSource.value != "NSE") return@launch
             // Buyers only / sellers only: check the order book of stocks sitting at a day high/low after a 2%+ move.
             val up = list.filter { it.pct >= 1.9 && it.high > 0 && it.price >= it.high - 1e-6 }.sortedByDescending { it.pct }.take(8)

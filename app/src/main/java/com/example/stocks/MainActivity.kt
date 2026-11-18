@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
 fun App(vm: VM) {
     var tab by remember { mutableIntStateOf(0) }
     var sel by remember { mutableStateOf<String?>(null) }
+    var showSetup by remember { mutableStateOf(false) }
     val lc = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(Unit) {
         while (true) {
@@ -50,13 +51,13 @@ fun App(vm: VM) {
     }
     vm.article.value?.let { ArticleScreen(it) { vm.article.value = null }; return }
     sel?.let { Detail(vm, it) { sel = null }; return }
-    val titles = listOf("Home", "Markets Dashboard", "Ideas", "News", "Portfolio")
+    val titles = listOf("Markets Dashboard", "Ideas", "News", "Portfolio")
     Scaffold(
         topBar = { TopAppBar(title = { Text(titles[tab], fontWeight = FontWeight.Bold) },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black),
-            actions = { Text(vm.source.value, style = MaterialTheme.typography.bodySmall, color = Color.Gray); IconButton({ vm.refresh() }) { Icon(Icons.Default.Refresh, "Refresh") } }) },
+            actions = { Text(vm.source.value, style = MaterialTheme.typography.bodySmall, color = Color.Gray); IconButton({ showSetup = true }) { Icon(Icons.Default.Settings, "Live feed settings") }; IconButton({ vm.refresh() }) { Icon(Icons.Default.Refresh, "Refresh") } }) },
         bottomBar = { NavigationBar(containerColor = Color(0xFF0D0D0D)) {
-            listOf("Home" to Icons.Default.Home, "Markets" to Icons.Default.ShowChart, "Ideas" to Icons.Default.Lightbulb,
+            listOf("Home" to Icons.Default.Home, "Ideas" to Icons.Default.Lightbulb,
                 "News" to Icons.Default.Article, "Portfolio" to Icons.Default.AccountBalanceWallet)
                 .forEachIndexed { i, (l, ic) ->
                     NavigationBarItem(tab == i, { tab = i }, { Icon(ic, l) }, label = { Text(l) },
@@ -65,8 +66,9 @@ fun App(vm: VM) {
                 }
         } }
     ) { pad -> Box(Modifier.padding(pad)) { when (tab) {
-        0 -> Home(vm) { sel = it }; 1 -> MarketsDash(vm) { sel = it }; 2 -> Ideas(vm) { sel = it }; 3 -> NewsScreen(vm)
+        0 -> MarketsDash(vm) { sel = it }; 1 -> Ideas(vm) { sel = it }; 2 -> NewsScreen(vm)
         else -> Portfolio(vm) { sel = it } } } }
+    if (showSetup) AngelSetupDialog(vm) { showSetup = false }
 }
 
 @Composable

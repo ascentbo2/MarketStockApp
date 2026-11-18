@@ -238,7 +238,7 @@ fun IndianStocksPane(vm: VM, open: (String) -> Unit) {
                 cats.forEachIndexed { i, t -> FilterChip(cat == i, { cat = i }, { Text(t, fontSize = 11.sp) }) }
             }
             TextButton({ show = true }) { Text("Search any NSE / BSE stock", fontSize = 12.sp) }
-            Text("Source: " + (if (vm.moversSource.value == "NSE") "NSE (live)" else "Yahoo Finance (may be delayed)"), Modifier.padding(horizontal = 12.dp), fontSize = 10.sp, color = Color.Gray)
+            Text("Source: " + (when (vm.moversSource.value) { "Angel One" -> "Angel One (live)"; "NSE" -> "NSE website"; else -> "Yahoo Finance (may be delayed)" }), Modifier.padding(horizontal = 12.dp), fontSize = 10.sp, color = Color.Gray)
         }
         if (vm.moversLoading.value) item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
         else if (vm.moversError.value) item {
@@ -247,7 +247,7 @@ fun IndianStocksPane(vm: VM, open: (String) -> Unit) {
                 TextButton({ vm.loadMovers(vm.moversIndex.value) }) { Text("Retry") }
             }
         } else if (rows.isEmpty()) item {
-            Text(if (cat >= 3 && vm.moversSource.value != "NSE") "Buyers Only and Sellers Only need live NSE order-book data, which NSE is not sending right now. Gainers, Losers and Volume still work." else when (cat) {
+            Text(if (cat >= 3 && vm.moversSource.value == "Yahoo") "Buyers Only and Sellers Only need live order data. Connect Angel One with the settings icon at the top (or wait for NSE to answer). Gainers, Losers and Volume still work." else when (cat) {
                 3 -> "No stock has only buyers right now in ${vm.moversIndex.value}. This also shows when the market is closed."
                 4 -> "No stock has only sellers right now in ${vm.moversIndex.value}. This also shows when the market is closed."
                 else -> "No stocks to show."
